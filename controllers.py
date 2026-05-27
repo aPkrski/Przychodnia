@@ -51,29 +51,37 @@ class AppController:
                     query = query.where(model.company.ilike(search))
             return session.scalars(query.order_by(model.date.desc())).all()
 
-    def add_invoice(self, clinic_id, number, item, net_amount, gross_amount, date_value):
+    def _add_record(self, model, clinic_id, values):
+        with self._session() as session:
+            record = model(clinic_id=clinic_id, **values)
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return record
+
+    def add_invoice(self, clinic_id, number, item, net_amount, gross_amount, date):
         return self._add_record(Invoice, clinic_id, {
             "number": number,
             "item": item,
             "net_amount": net_amount,
             "gross_amount": gross_amount,
-            "date": date_value,
+            "date": date,
         })
 
-    def add_payroll(self, clinic_id, employee, period, amount, date_value):
+    def add_payroll(self, clinic_id, employee, period, amount, date):
         return self._add_record(Payroll, clinic_id, {
             "employee": employee,
             "period": period,
             "amount": amount,
-            "date": date_value,
+            "date": date,
         })
 
-    def add_revenue(self, clinic_id, company, period, amount, date_value):
+    def add_revenue(self, clinic_id, company, period, amount, date):
         return self._add_record(Revenue, clinic_id, {
             "company": company,
             "period": period,
             "amount": amount,
-            "date": date_value,
+            "date": date,
         })
 
     def update_record(self, model, record_id, data):

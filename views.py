@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QTableView,
     QVBoxLayout,
     QWidget,
+    QAbstractItemView,
 )
 from PySide6.QtGui import QStandardItem, QStandardItemModel
 
@@ -157,8 +158,8 @@ class RecordPage(QWidget):
         self.table = QTableView()
         self.table.setSortingEnabled(True)
         self.table.doubleClicked.connect(self.on_edit)
-        self.table.setSelectionBehavior(self.table.SelectRows)
-        self.table.setSelectionMode(self.table.SingleSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         layout.addWidget(self.table)
 
         actions_layout = QHBoxLayout()
