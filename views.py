@@ -1,9 +1,11 @@
 from datetime import date
+import tempfile
+import os
 from pathlib import Path
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt, QDate
+from PySide6.QtCore import Qt, QDate, QSize
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -29,11 +31,13 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QStackedWidget,
     QTableView,
+    QHeaderView,
     QVBoxLayout,
     QWidget,
     QAbstractItemView,
 )
-from PySide6.QtGui import QStandardItem, QStandardItemModel
+from PySide6.QtGui import QStandardItem, QStandardItemModel, QIcon, QPixmap
+from PySide6.QtWidgets import QSizePolicy
 
 from controllers import AppController
 from models import Clinic, Invoice, Payroll, Revenue
@@ -107,10 +111,12 @@ class RecordDialog(QDialog):
 
 
 class RecordPage(QWidget):
-    def __init__(self, controller, clinic_id, config, parent=None):
+    def __init__(self, controller, clinic_id, config, location=None, clinic=None, parent=None):
         super().__init__(parent)
         self.controller = controller
         self.clinic_id = clinic_id
+        self.location = location
+        self.clinic = clinic
         self.config = config
         self.items = []
         self.build_ui()
@@ -119,17 +125,35 @@ class RecordPage(QWidget):
     def build_ui(self):
         layout = QVBoxLayout(self)
         header_layout = QHBoxLayout()
+        # title + breadcrumb stack
+        title_box = QVBoxLayout()
         title = QLabel(self.config["title"])
         title.setObjectName("titleLabel")
-        header_layout.addWidget(title)
+        title_box.addWidget(title)
+        # breadcrumb showing location and clinic if provided
+        if hasattr(self, "location") and self.location and hasattr(self, "clinic") and self.clinic:
+            breadcrumb = QLabel(f"{self.location.name} » {self.clinic.name}")
+            breadcrumb.setObjectName("breadcrumbLabel")
+            breadcrumb.setStyleSheet("color: #9ca3af; font-size: 12px;")
+            title_box.addWidget(breadcrumb)
+        header_layout.addLayout(title_box)
         header_layout.addStretch()
         add_button = QPushButton(self.config["add_text"])
         add_button.clicked.connect(self.on_add)
+        add_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         header_layout.addWidget(add_button)
         export_button = QPushButton("Eksportuj do Excel")
+        asset_dir = Path(__file__).parent / "assets"
+        export_icon = asset_dir / "export.svg"
+        if export_icon.exists():
+            export_button.setIcon(QIcon(str(export_icon)))
+            export_button.setIconSize(QSize(16, 16))
         export_button.clicked.connect(self.on_export)
+        export_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         header_layout.addWidget(export_button)
+        # add slight spacing below header
         layout.addLayout(header_layout)
+        layout.addSpacing(8)
 
         filter_layout = QHBoxLayout()
         self.search_input = QLineEdit()
@@ -159,7 +183,16 @@ class RecordPage(QWidget):
         self.table.setSortingEnabled(True)
         self.table.doubleClicked.connect(self.on_edit)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        # allow multiple selection for batch operations
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        # make table more spacious and responsive
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # style header and corner to match app colors
+        try:
+            self.table.setStyleSheet(
+                "QHeaderView::section { background-color: #60a5fa; color: white; } QTableView::corner { background-color: #60a5fa; }")
+        except Exception:
+            pass
         layout.addWidget(self.table)
 
         actions_layout = QHBoxLayout()
@@ -189,22 +222,35 @@ class RecordPage(QWidget):
                 item.setEditable(False)
             model.appendRow(row)
         self.table.setModel(model)
+        # try to size columns to contents and then stretch to fill available space
+        header = self.table.horizontalHeader()
+        try:
+            header.setSectionResizeMode(QHeaderView.ResizeToContents)
+            header.setStretchLastSection(True)
+        except Exception:
+            pass
         self.table.resizeColumnsToContents()
+        # ensure reasonable minimum width
+        try:
+            winw = self.window().width()
+            self.table.setMinimumWidth(max(800, int(winw * 0.6)))
+        except Exception:
+            self.table.setMinimumWidth(800)
 
     def update_summary(self):
         values = [self.config["summary_fn"](record) for record in self.items]
         total = sum(values)
         label = self.config.get("summary_label", "Suma")
-        self.summary_label.setText(f"{label}: {total:,.2f}")
+        self.summary_label.setText(f"{label}: {total:,.2f} zł")
 
-    def selected_record(self):
-        index = self.table.currentIndex()
-        if not index.isValid():
-            return None
-        row = index.row()
-        if row < 0 or row >= len(self.items):
-            return None
-        return self.items[row]
+    def selected_records(self):
+        sel = self.table.selectionModel().selectedRows()
+        rows = [s.row() for s in sel]
+        records = []
+        for r in rows:
+            if 0 <= r < len(self.items):
+                records.append(self.items[r])
+        return records
 
     def on_add(self):
         dialog = RecordDialog(self.config["dialog_title"], self.config["fields"], parent=self)
@@ -214,9 +260,11 @@ class RecordPage(QWidget):
             self.refresh()
 
     def on_edit(self, index):
-        record = self.selected_record()
-        if record is None:
+        # edit the double-clicked row
+        row = index.row()
+        if row < 0 or row >= len(self.items):
             return
+        record = self.items[row]
         current_data = {field["name"]: getattr(record, field["name"]) for field in self.config["fields"]}
         dialog = RecordDialog(self.config["dialog_title"], self.config["fields"], values=current_data, parent=self)
         if dialog.exec() == QDialog.Accepted:
@@ -225,18 +273,24 @@ class RecordPage(QWidget):
             self.refresh()
 
     def on_delete(self):
-        record = self.selected_record()
-        if not record:
-            QMessageBox.information(self, "Usuń", "Wybierz rekord do usunięcia.")
+        records = self.selected_records()
+        if not records:
+            QMessageBox.information(self, "Usuń", "Wybierz rekordy do usunięcia.")
             return
-        answer = QMessageBox.question(self, "Usuń rekord", "Czy na pewno usunąć zaznaczony rekord?")
+        answer = QMessageBox.question(self, "Usuń rekordy", f"Czy na pewno usunąć {len(records)} zaznaczonych rekordów?")
         if answer == QMessageBox.StandardButton.Yes:
-            self.config["delete_fn"](record.id)
+            for rec in records:
+                self.config["delete_fn"](rec.id)
             self.refresh()
 
     def on_export(self):
-        default_name = f"{self.config['title'].lower().replace(' ', '_')}.xlsx"
-        path, _ = QFileDialog.getSaveFileName(self, "Eksportuj do Excel", default_name, "Excel Files (*.xlsx)")
+        # include location, clinic and date range in filename
+        start = self.start_date.date().toPython()
+        end = self.end_date.date().toPython()
+        loc = (self.location.name if hasattr(self, 'location') and self.location else 'location')
+        clname = (self.clinic.name if hasattr(self, 'clinic') and self.clinic else f"clinic_{self.clinic_id}")
+        default_name = f"{loc}_{clname}_{start}_{end}_{self.config['title'].lower().replace(' ', '_')}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(self, "Eksportuj do Excel", default_name, "Pliki Excel (*.xlsx)")
         if path:
             rows = [self.config["export_fn"](record) for record in self.items]
             self.config["export_to_excel"](rows, path)
@@ -249,7 +303,7 @@ class AppMainWindow(QMainWindow):
         self.controller = AppController()
         self.current_location = None
         self.current_clinic = None
-        self.setWindowTitle("Poradnia Finance Manager")
+        self.setWindowTitle("Menadżer Finansów Poradni")
         self.resize(1400, 900)
         self.theme = "dark"
         self.setStyleSheet(dark_theme)
@@ -260,7 +314,8 @@ class AppMainWindow(QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        # add some top margin so headers are not glued to window top
+        main_layout.setContentsMargins(0, 16, 0, 0)
 
         self.sidebar = QFrame()
         self.sidebar.setObjectName("sidebar")
@@ -273,6 +328,17 @@ class AppMainWindow(QMainWindow):
         self.logo_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
         sidebar_layout.addWidget(self.logo_label)
         sidebar_layout.addSpacing(8)
+
+        # Back button (disabled on home)
+        self.back_button = QPushButton("Wstecz")
+        self.back_button.setObjectName("navButton")
+        self.back_button.clicked.connect(self.go_back)
+        self.back_button.setEnabled(False)
+        # make back button more visible
+        self.back_button.setStyleSheet("background-color: #2563eb; color: white; padding: 8px 12px; border-radius: 6px;")
+        self.back_button.setMinimumHeight(48)
+        self.back_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        sidebar_layout.addWidget(self.back_button)
 
         self.home_button = QPushButton("Strona główna")
         self.home_button.setObjectName("navButton")
@@ -293,6 +359,8 @@ class AppMainWindow(QMainWindow):
         main_layout.addWidget(self.sidebar)
 
         self.stack = QStackedWidget()
+        # navigation history stack (stores previous widget refs)
+        self.history = []
         main_layout.addWidget(self.stack, 1)
 
         self.home_page = self.build_home_page()
@@ -318,10 +386,24 @@ class AppMainWindow(QMainWindow):
         grid = QGridLayout()
         grid.setSpacing(20)
         locations = self.controller.get_locations()
+        asset_dir = Path(__file__).parent / "assets"
+        # mapping location names to specific icons
+        loc_icons = {
+            "Pruszków": asset_dir / "pruszkow.svg",
+            "Żyrardów": asset_dir / "zyrardow.svg",
+            "Zyrardow": asset_dir / "zyrardow.svg",
+        }
+        default_icon = asset_dir / "medical1.svg"
         for index, location in enumerate(locations):
             button = QPushButton(location.name)
-            button.setMinimumHeight(140)
-            button.setFont(QFont("Segoe UI", 14, QFont.Bold))
+            # larger, responsive tiles
+            button.setMinimumHeight(200)
+            button.setFont(QFont("Segoe UI", 16, QFont.Bold))
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            icon_path = loc_icons.get(location.name, default_icon)
+            if icon_path.exists():
+                button.setIcon(QIcon(str(icon_path)))
+                button.setIconSize(QSize(64, 64))
             button.clicked.connect(lambda checked, loc=location: self.show_clinic_list(loc))
             grid.addWidget(button, index // 2, index % 2)
         layout.addLayout(grid)
@@ -342,10 +424,17 @@ class AppMainWindow(QMainWindow):
         content_layout = QGridLayout(content)
         content_layout.setSpacing(16)
         clinics = self.controller.get_clinics(location.id)
+        asset_dir = Path(__file__).parent / "assets"
+        clinic_icon = asset_dir / "clinic.svg"
         for index, clinic in enumerate(clinics):
             button = QPushButton(clinic.name)
-            button.setMinimumHeight(100)
-            button.setFont(QFont("Segoe UI", 12, QFont.Bold))
+            # larger clinic tiles
+            button.setMinimumHeight(180)
+            button.setFont(QFont("Segoe UI", 14, QFont.Bold))
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            if clinic_icon.exists():
+                button.setIcon(QIcon(str(clinic_icon)))
+                button.setIconSize(QSize(64, 64))
             button.clicked.connect(lambda checked, cl=clinic: self.show_dashboard(location, cl))
             content_layout.addWidget(button, index // 3, index % 3)
         scroll.setWidget(content)
@@ -362,6 +451,13 @@ class AppMainWindow(QMainWindow):
         layout.addSpacing(12)
 
         button_layout = QHBoxLayout()
+        asset_dir = Path(__file__).parent / "assets"
+        icon_map = {
+            "Faktury": asset_dir / "invoice.svg",
+            "Wynagrodzenia": asset_dir / "payroll.svg",
+            "Przychody": asset_dir / "revenue.svg",
+            "Analiza finansowa": asset_dir / "analysis.svg",
+        }
         for name, callback in [
             ("Faktury", self.show_invoices),
             ("Wynagrodzenia", self.show_payroll),
@@ -369,10 +465,25 @@ class AppMainWindow(QMainWindow):
             ("Analiza finansowa", self.show_analysis),
         ]:
             button = QPushButton(name)
-            button.setMinimumHeight(100)
+            button.setMinimumHeight(220)
+            button.setFont(QFont("Segoe UI", 14, QFont.Bold))
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            icon_path = icon_map.get(name)
+            if icon_path and icon_path.exists():
+                button.setIcon(QIcon(str(icon_path)))
+                button.setIconSize(QSize(64, 64))
             button.clicked.connect(callback)
             button_layout.addWidget(button)
         layout.addLayout(button_layout)
+
+        # Export summary for the whole clinic
+        export_layout = QHBoxLayout()
+        export_summary_button = QPushButton("Eksport zestawienia poradni")
+        export_summary_button.setMinimumHeight(48)
+        export_summary_button.clicked.connect(lambda: self.export_clinic_summary(location, clinic))
+        export_layout.addWidget(export_summary_button)
+        export_layout.addStretch()
+        layout.addLayout(export_layout)
 
         summary = QLabel()
         summary.setWordWrap(True)
@@ -397,17 +508,25 @@ class AppMainWindow(QMainWindow):
         layout.addSpacing(12)
 
         controls = QHBoxLayout()
+        controls.setSpacing(8)
+        controls.setContentsMargins(0, 0, 0, 0)
         self.location_select = QComboBox()
         self.location_select.addItem("Wszystkie lokalizacje", None)
         for location in self.controller.get_locations():
             self.location_select.addItem(location.name, location.id)
         self.location_select.currentIndexChanged.connect(self.update_analysis)
-        controls.addWidget(QLabel("Lokalizacja"))
+        lbl_loc = QLabel("Lokalizacja")
+        lbl_loc.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_loc.setMaximumWidth(120)
+        controls.addWidget(lbl_loc)
         controls.addWidget(self.location_select)
 
         self.clinic_select = QComboBox()
         self.clinic_select.addItem("Wszystkie poradnie", None)
-        controls.addWidget(QLabel("Poradnia"))
+        lbl_clinic = QLabel("Poradnia")
+        lbl_clinic.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_clinic.setMaximumWidth(120)
+        controls.addWidget(lbl_clinic)
         controls.addWidget(self.clinic_select)
 
         self.analysis_start = QDateEdit()
@@ -415,7 +534,10 @@ class AppMainWindow(QMainWindow):
         self.analysis_start.setDisplayFormat("yyyy-MM-dd")
         self.analysis_start.setDate(QDate.currentDate().addMonths(-3))
         self.analysis_start.dateChanged.connect(self.update_analysis)
-        controls.addWidget(QLabel("Od"))
+        lbl_od = QLabel("Od")
+        lbl_od.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_od.setMaximumWidth(60)
+        controls.addWidget(lbl_od)
         controls.addWidget(self.analysis_start)
 
         self.analysis_end = QDateEdit()
@@ -423,10 +545,28 @@ class AppMainWindow(QMainWindow):
         self.analysis_end.setDisplayFormat("yyyy-MM-dd")
         self.analysis_end.setDate(QDate.currentDate())
         self.analysis_end.dateChanged.connect(self.update_analysis)
-        controls.addWidget(QLabel("Do"))
+        lbl_do = QLabel("Do")
+        lbl_do.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lbl_do.setMaximumWidth(60)
+        controls.addWidget(lbl_do)
         controls.addWidget(self.analysis_end)
 
         layout.addLayout(controls)
+
+        # Export analysis button
+        export_controls = QHBoxLayout()
+        self.analysis_export_button = QPushButton("Eksport analizy")
+        # add icon to export analysis button
+        asset_dir = Path(__file__).parent / "assets"
+        export_icon = asset_dir / "analysis.svg"
+        if export_icon.exists():
+            self.analysis_export_button.setIcon(QIcon(str(export_icon)))
+            self.analysis_export_button.setIconSize(QSize(16, 16))
+        self.analysis_export_button.setMinimumHeight(36)
+        self.analysis_export_button.clicked.connect(self.on_export_analysis)
+        export_controls.addWidget(self.analysis_export_button)
+        export_controls.addStretch()
+        layout.addLayout(export_controls)
 
         summary_group = QGroupBox("Podsumowanie")
         summary_layout = QVBoxLayout(summary_group)
@@ -450,10 +590,18 @@ class AppMainWindow(QMainWindow):
     def show_home(self):
         self.current_location = None
         self.current_clinic = None
+        # clear navigation history when returning home
+        self.history.clear()
+        self.back_button.setEnabled(False)
         self.stack.setCurrentWidget(self.home_page)
 
     def show_clinic_list(self, location):
         self.current_location = location
+        # push current view to history for back navigation
+        cur = self.stack.currentWidget()
+        if cur is not None:
+            self.history.append(cur)
+            self.back_button.setEnabled(True)
         clinic_list_page = self.build_clinic_list_page(location)
         self.stack.removeWidget(self.clinic_page)
         self.clinic_page = clinic_list_page
@@ -463,6 +611,11 @@ class AppMainWindow(QMainWindow):
     def show_dashboard(self, location, clinic):
         self.current_location = location
         self.current_clinic = clinic
+        # push current view to history
+        cur = self.stack.currentWidget()
+        if cur is not None:
+            self.history.append(cur)
+            self.back_button.setEnabled(True)
         dashboard_page = self.build_dashboard_page(location, clinic)
         self.stack.removeWidget(self.dashboard_page)
         self.dashboard_page = dashboard_page
@@ -473,6 +626,11 @@ class AppMainWindow(QMainWindow):
         if not self.current_clinic:
             QMessageBox.information(self, "Wybór poradni", "Najpierw wybierz poradnię.")
             return
+        # push current view to history
+        cur = self.stack.currentWidget()
+        if cur is not None:
+            self.history.append(cur)
+            self.back_button.setEnabled(True)
         config = {
             "title": "Moduł faktur",
             "add_text": "Dodaj fakturę",
@@ -490,9 +648,9 @@ class AppMainWindow(QMainWindow):
             "add_fn": self.controller.add_invoice,
             "update_fn": lambda record_id, data: self.controller.update_record(Invoice, record_id, data),
             "delete_fn": lambda record_id: self.controller.delete_record(Invoice, record_id),
-            "row_fn": lambda record: [record.id, record.number, record.item, f"{record.net_amount:.2f}", f"{record.gross_amount:.2f}", record.date],
-            "summary_fn": lambda record: float(record.net_amount),
-            "summary_label": "Suma netto",
+            "row_fn": lambda record: [record.id, record.number, record.item, f"{record.net_amount:.2f} zł", f"{record.gross_amount:.2f} zł", record.date],
+            "summary_fn": lambda record: float(record.gross_amount),
+            "summary_label": "Suma brutto",
             "export_fn": lambda record: {
                 "ID": record.id,
                 "Numer faktury": record.number,
@@ -503,7 +661,7 @@ class AppMainWindow(QMainWindow):
             },
             "export_to_excel": self.controller.export_to_excel,
         }
-        page = RecordPage(self.controller, self.current_clinic.id, config)
+        page = RecordPage(self.controller, self.current_clinic.id, config, location=self.current_location, clinic=self.current_clinic)
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
 
@@ -511,6 +669,11 @@ class AppMainWindow(QMainWindow):
         if not self.current_clinic:
             QMessageBox.information(self, "Wybór poradni", "Najpierw wybierz poradnię.")
             return
+        # push current view to history
+        cur = self.stack.currentWidget()
+        if cur is not None:
+            self.history.append(cur)
+            self.back_button.setEnabled(True)
         config = {
             "title": "Moduł wynagrodzeń",
             "add_text": "Dodaj wynagrodzenie",
@@ -527,7 +690,7 @@ class AppMainWindow(QMainWindow):
             "add_fn": self.controller.add_payroll,
             "update_fn": lambda record_id, data: self.controller.update_record(Payroll, record_id, data),
             "delete_fn": lambda record_id: self.controller.delete_record(Payroll, record_id),
-            "row_fn": lambda record: [record.id, record.employee, record.period, f"{record.amount:.2f}", record.date],
+            "row_fn": lambda record: [record.id, record.employee, record.period, f"{record.amount:.2f} zł", record.date],
             "summary_fn": lambda record: float(record.amount),
             "summary_label": "Suma wynagrodzeń",
             "export_fn": lambda record: {
@@ -539,7 +702,7 @@ class AppMainWindow(QMainWindow):
             },
             "export_to_excel": self.controller.export_to_excel,
         }
-        page = RecordPage(self.controller, self.current_clinic.id, config)
+        page = RecordPage(self.controller, self.current_clinic.id, config, location=self.current_location, clinic=self.current_clinic)
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
 
@@ -547,6 +710,11 @@ class AppMainWindow(QMainWindow):
         if not self.current_clinic:
             QMessageBox.information(self, "Wybór poradni", "Najpierw wybierz poradnię.")
             return
+        # push current view to history
+        cur = self.stack.currentWidget()
+        if cur is not None:
+            self.history.append(cur)
+            self.back_button.setEnabled(True)
         config = {
             "title": "Moduł przychodów",
             "add_text": "Dodaj przychód",
@@ -563,7 +731,7 @@ class AppMainWindow(QMainWindow):
             "add_fn": self.controller.add_revenue,
             "update_fn": lambda record_id, data: self.controller.update_record(Revenue, record_id, data),
             "delete_fn": lambda record_id: self.controller.delete_record(Revenue, record_id),
-            "row_fn": lambda record: [record.id, record.company, record.period, f"{record.amount:.2f}", record.date],
+            "row_fn": lambda record: [record.id, record.company, record.period, f"{record.amount:.2f} zł", record.date],
             "summary_fn": lambda record: float(record.amount),
             "summary_label": "Suma przychodów",
             "export_fn": lambda record: {
@@ -575,7 +743,7 @@ class AppMainWindow(QMainWindow):
             },
             "export_to_excel": self.controller.export_to_excel,
         }
-        page = RecordPage(self.controller, self.current_clinic.id, config)
+        page = RecordPage(self.controller, self.current_clinic.id, config, location=self.current_location, clinic=self.current_clinic)
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
 
@@ -589,6 +757,21 @@ class AppMainWindow(QMainWindow):
         else:
             self.theme = "dark"
             self.setStyleSheet(dark_theme)
+
+    def go_back(self):
+        if not hasattr(self, "history") or not self.history:
+            return
+        prev = self.history.pop()
+        # If the previous widget was the home page, clear navigation state
+        if prev == getattr(self, "home_page", None):
+            self.current_location = None
+            self.current_clinic = None
+            self.history.clear()
+            self.back_button.setEnabled(False)
+        elif not self.history:
+            # disable back button when no more history
+            self.back_button.setEnabled(False)
+        self.stack.setCurrentWidget(prev)
 
     def populate_clinic_options(self):
         location_id = self.location_select.currentData()
@@ -624,13 +807,121 @@ class AppMainWindow(QMainWindow):
         self.plot_analysis(stats)
 
     def plot_analysis(self, stats):
+        # improve chart appearance and add units/filters info
         self.figure.clear()
+        self.figure.patch.set_facecolor("#f3f7fb")
         axes = self.figure.subplots(1, 2)
-        axes[0].bar(["Faktury netto", "Wynagrodzenia", "Przychody"], [stats["invoice_net"], stats["payroll"], stats["revenue"]], color=["#3b82f6", "#ef4444", "#10b981"])
+        cats = ["Faktury netto (zł)", "Wynagrodzenia (zł)", "Przychody (zł)"]
+        values = [stats["invoice_net"], stats["payroll"], stats["revenue"]]
+        bars = axes[0].bar(cats, values, color=["#60a5fa", "#fca5a5", "#86efac"], edgecolor="#111827", alpha=0.9)
         axes[0].set_title("Suma kategorii")
-        axes[0].grid(axis="y", alpha=0.3)
-        axes[1].plot(["Start", "Koniec"], [stats["invoice_gross"], stats["profit"]], marker="o", color="#f59e0b")
+        axes[0].grid(axis="y", alpha=0.2)
+        axes[0].set_ylabel("Kwota (zł)")
+        # annotate bars
+        for b, v in zip(bars, values):
+            axes[0].text(b.get_x() + b.get_width() / 2, v, f"{v:,.2f} zł", ha='center', va='bottom', fontsize=9)
+
+        axes[1].plot(["Start", "Koniec"], [stats["invoice_gross"], stats["profit"]], marker="o", color="#f59e0b", linewidth=2)
         axes[1].set_title("Trend wyników")
-        axes[1].grid(alpha=0.3)
-        self.figure.tight_layout()
+        axes[1].set_ylabel("Kwota (zł)")
+        axes[1].grid(alpha=0.2)
+
+        # add filters info as small subtitle
+        filters_text = f"Lokalizacja: {self.location_select.currentText()} | Poradnia: {self.clinic_select.currentText()} | Okres: {self.analysis_start.date().toPython()} — {self.analysis_end.date().toPython()}"
+        self.figure.suptitle(filters_text, fontsize=9, y=0.98)
+
+        self.figure.tight_layout(rect=[0, 0, 1, 0.95])
         self.canvas.draw()
+
+    def export_clinic_summary(self, location, clinic):
+        default_name = f"{clinic.name.lower().replace(' ', '_')}_zestawienie.xlsx"
+        path, _ = QFileDialog.getSaveFileName(self, "Eksport zestawienia poradni", default_name, "Excel Files (*.xlsx)")
+        if path:
+            self.controller.export_clinic_summary(clinic.id, path)
+            QMessageBox.information(self, "Eksport", "Zestawienie poradni zostało wyeksportowane.")
+
+    def on_export_analysis(self):
+        # gather current filters and data then export
+        location_id = self.location_select.currentData()
+        clinic_id = self.clinic_select.currentData()
+        start_date = self.analysis_start.date().toPython()
+        end_date = self.analysis_end.date().toPython()
+        default_name = f"analiza_{self.location_select.currentText().lower().replace(' ', '_')}_{self.clinic_select.currentText().lower().replace(' ', '_')}_{start_date}_{end_date}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(self, "Eksport analizy", default_name, "Pliki Excel (*.xlsx)")
+        if not path:
+            return
+        # save current figure to temp file
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+        tmp.close()
+        self.figure.savefig(tmp.name, dpi=150)
+
+        # fetch records for sheets
+        invs = []
+        pays = []
+        revs = []
+        # if clinic selected, fetch from that clinic; if only location selected, fetch for all clinics in location
+        if clinic_id:
+            invs = self.controller.get_invoices(clinic_id, start_date, end_date)
+            pays = self.controller.get_payrolls(clinic_id, start_date, end_date)
+            revs = self.controller.get_revenues(clinic_id, start_date, end_date)
+        else:
+            # aggregate from all clinics under location or all
+            loc_id = location_id
+            clinics = []
+            if loc_id:
+                clinics = self.controller.get_clinics(loc_id)
+            else:
+                clinics = self.controller.get_clinics()
+            for c in clinics:
+                invs.extend(self.controller.get_invoices(c.id, start_date, end_date))
+                pays.extend(self.controller.get_payrolls(c.id, start_date, end_date))
+                revs.extend(self.controller.get_revenues(c.id, start_date, end_date))
+
+        # build clinic id->name map to avoid lazy-loading detached relationships
+        clinics_map = {c.id: c.name for c in self.controller.get_clinics()}
+        # build dataframes
+        import pandas as pd
+
+        df_inv = pd.DataFrame([{
+            "ID": r.id,
+            "Numer": r.number,
+            "Pozycja": r.item,
+            "Cena netto": float(r.net_amount),
+            "Cena brutto": float(r.gross_amount),
+            "Data": r.date,
+            "Poradnia": clinics_map.get(getattr(r, 'clinic_id', None), '')
+        } for r in invs])
+
+        df_pay = pd.DataFrame([{
+            "ID": r.id,
+            "Pracownik": r.employee,
+            "Miesiąc": r.period,
+            "Kwota": float(r.amount),
+            "Data": r.date,
+            "Poradnia": clinics_map.get(getattr(r, 'clinic_id', None), '')
+        } for r in pays])
+
+        df_rev = pd.DataFrame([{
+            "ID": r.id,
+            "Firma": r.company,
+            "Miesiąc": r.period,
+            "Kwota": float(r.amount),
+            "Data": r.date,
+            "Poradnia": clinics_map.get(getattr(r, 'clinic_id', None), '')
+        } for r in revs])
+
+        metadata = {
+            "Lokalizacja": self.location_select.currentText(),
+            "Poradnia": self.clinic_select.currentText(),
+            "Start": str(start_date),
+            "Koniec": str(end_date),
+        }
+
+        # use controller export helper
+        self.controller.export_report(path, {"Podsumowanie": pd.DataFrame([self.controller.get_financial_summary(location_id=location_id, clinic_id=clinic_id, start_date=start_date, end_date=end_date)]), "Faktury": df_inv, "Wynagrodzenia": df_pay, "Przychody": df_rev}, tmp.name, metadata)
+        QMessageBox.information(self, "Eksport", "Analiza została wyeksportowana do Excel.")
+        try:
+            os.remove(tmp.name)
+        except Exception:
+            pass
+

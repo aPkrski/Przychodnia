@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pandas as pd
 from sqlalchemy import cast, Date, func, or_, select
@@ -143,6 +143,124 @@ class AppController:
         if df.empty:
             df = pd.DataFrame(columns=["ID", "Clinic", "Type", "Value"])
         df.to_excel(filename, index=False, engine="openpyxl")
+
+    def export_clinic_summary(self, clinic_id, filename, start_date=None, end_date=None):
+        invoices = self.get_invoices(clinic_id, start_date=start_date, end_date=end_date)
+        payrolls = self.get_payrolls(clinic_id, start_date=start_date, end_date=end_date)
+        revenues = self.get_revenues(clinic_id, start_date=start_date, end_date=end_date)
+
+        inv_rows = []
+        for r in invoices:
+            inv_rows.append({
+                "ID": r.id,
+                "Numer faktury": r.number,
+                "Pozycja": r.item,
+                "Cena netto": float(r.net_amount),
+                "Cena brutto": float(r.gross_amount),
+                "Data": r.date,
+            })
+
+        pay_rows = []
+        for p in payrolls:
+            pay_rows.append({
+                "ID": p.id,
+                "Pracownik": p.employee,
+                "Miesiąc": p.period,
+                "Kwota": float(p.amount),
+                "Data": p.date,
+            })
+
+        rev_rows = []
+        for r in revenues:
+            rev_rows.append({
+                "ID": r.id,
+                "Firma": r.company,
+                "Miesiąc": r.period,
+                "Kwota": float(r.amount),
+                "Data": r.date,
+            })
+
+        summary = self.get_financial_summary(clinic_id=clinic_id)
+        summary_rows = [
+            {"Kategoria": "Suma faktur netto", "Kwota": summary["invoice_net"]},
+            {"Kategoria": "Suma faktur brutto", "Kwota": summary["invoice_gross"]},
+            {"Kategoria": "Suma wynagrodzeń", "Kwota": summary["payroll"]},
+            {"Kategoria": "Suma przychodów", "Kwota": summary["revenue"]},
+            {"Kategoria": "Wynik końcowy", "Kwota": summary["profit"]},
+        ]
+
+        df_inv = pd.DataFrame(inv_rows)
+        df_pay = pd.DataFrame(pay_rows)
+        df_rev = pd.DataFrame(rev_rows)
+        df_summary = pd.DataFrame(summary_rows)
+
+        with pd.ExcelWriter(filename, engine="openpyxl") as writer:
+            df_summary.to_excel(writer, sheet_name="Podsumowanie", index=False)
+            df_inv.to_excel(writer, sheet_name="Faktury", index=False)
+            df_pay.to_excel(writer, sheet_name="Wynagrodzenia", index=False)
+            df_rev.to_excel(writer, sheet_name="Przychody", index=False)
+            meta = pd.DataFrame([{
+                "Wygenerowano": datetime.now().isoformat(),
+                "ZakresDat": f"{start_date} do {end_date}" if start_date or end_date else "wszystkie"
+            }])
+            meta.to_excel(writer, sheet_name="Metadane", index=False)
+
+    def export_report(self, filename, sheets: dict, image_path: str = None, metadata: dict = None):
+        """
+        sheets: dict of sheet_name -> pandas.DataFrame
+        image_path: optional path to an image to insert into the first sheet
+        metadata: dict of metadata values to add to Metadata sheet
+        """
+        with pd.ExcelWriter(filename, engine="openpyxl") as writer:
+            for name, df in sheets.items():
+                # ensure dataframe
+                if df is None or (hasattr(df, 'empty') and df.empty):
+                    pd.DataFrame().to_excel(writer, sheet_name=name, index=False)
+                else:
+                    df.to_excel(writer, sheet_name=name, index=False)
+            meta_rows = [metadata] if metadata else []
+            meta_rows.append({"Wygenerowano": datetime.now().isoformat()})
+            pd.DataFrame(meta_rows).to_excel(writer, sheet_name="Metadane", index=False)
+            writer.save()
+        # insert image using openpyxl if provided
+        try:
+            from openpyxl import load_workbook
+            from openpyxl.drawing.image import Image as OpenpyxlImage
+            wb = load_workbook(filename)
+            # set number formats for numeric currency columns
+            for sheet_name in sheets.keys():
+                if sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    # read headers
+                    headers = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
+                    currency_cols = [i for i, h in enumerate(headers) if isinstance(h, str) and ("Cena" in h or "Kwota" in h or "Brutto" in h or "netto" in h or "brutto" in h.lower())]
+                    if currency_cols:
+                        for row in ws.iter_rows(min_row=2):
+                            for col_idx in currency_cols:
+                                try:
+                                    cell = row[col_idx]
+                                    # if cell contains numeric value, set number format
+                                    if cell.value is not None:
+                                        try:
+                                            cell.value = float(cell.value)
+                                            cell.number_format = '#,##0.00 "zł"'
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    pass
+            # insert image into first sheet if provided
+            if image_path:
+                try:
+                    first_sheet = list(sheets.keys())[0]
+                    ws = wb[first_sheet]
+                    img = OpenpyxlImage(image_path)
+                    img.anchor = 'A1'
+                    ws.add_image(img)
+                except Exception:
+                    pass
+            wb.save(filename)
+        except Exception:
+            pass
 
     def get_location_by_name(self, location_name):
         with self._session() as session:
