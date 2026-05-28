@@ -11,13 +11,13 @@ if ($LASTEXITCODE -ne 0) {
 $iconPath = "assets/app_icon.ico"
 $hasIcon = Test-Path $iconPath
 
-# Build with or without icon
+# Build with or without icon, and include assets folder
 if ($hasIcon) {
-    Write-Host "Building with icon: $iconPath"
-    pyinstaller --noconfirm --windowed --onefile --name PoradniaFinanceApp --icon=$iconPath main.py
+    Write-Host "Building with icon: $iconPath and assets folder"
+    pyinstaller --noconfirm --windowed --onefile --name PoradniaFinanceApp --icon=$iconPath --add-data "assets:assets" main.py
 } else {
-    Write-Host "Icon not found, building without icon."
-    pyinstaller --noconfirm --windowed --onefile --name PoradniaFinanceApp main.py
+    Write-Host "Building without icon, including assets folder"
+    pyinstaller --noconfirm --windowed --onefile --name PoradniaFinanceApp --add-data "assets:assets" main.py
 }
 
 if ($LASTEXITCODE -ne 0) {

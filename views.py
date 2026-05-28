@@ -547,9 +547,18 @@ class AppMainWindow(QMainWindow):
         export_layout.addStretch()
         layout.addLayout(export_layout)
 
-        # Improved summary section - professional dashboard style
+        # Improved summary section - professional dashboard style with dark mode support
         summary_frame = QFrame()
-        summary_frame.setStyleSheet("background-color: #f8f9fa; border-radius: 8px; padding: 16px;")
+        # Dynamic background based on theme
+        if self.theme == "dark":
+            summary_frame.setStyleSheet("background-color: #1f2937; border: 2px solid #374151; border-radius: 8px; padding: 16px;")
+            text_color = "#e5e7eb"
+            label_color = "#9ca3af"
+        else:
+            summary_frame.setStyleSheet("background-color: #f8f9fa; border-radius: 8px; padding: 16px;")
+            text_color = "#1f2937"
+            label_color = "#4b5563"
+        
         summary_layout = QVBoxLayout(summary_frame)
         summary_layout.setContentsMargins(16, 16, 16, 16)
         summary_layout.setSpacing(12)
@@ -559,64 +568,102 @@ class AppMainWindow(QMainWindow):
         # Title
         summary_title = QLabel("Podsumowanie finansowe")
         summary_title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        summary_title.setStyleSheet(f"color: {text_color};")
         summary_layout.addWidget(summary_title)
         
         # Grid with financial data
         data_layout = QGridLayout()
         data_layout.setSpacing(16)
         
-        # Left column
-        data_layout.addWidget(QLabel("Faktury netto:"), 0, 0)
+        # Left column - COSTS (red)
+        net_label = QLabel("Faktury netto:")
+        net_label.setStyleSheet(f"color: {label_color};")
+        data_layout.addWidget(net_label, 0, 0)
         net_val = QLabel(f"{summary_data['invoice_net']:,.2f} zł")
         net_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        net_val.setStyleSheet("color: #3b82f6;")
+        net_val.setStyleSheet("color: #ef4444;")  # Red for costs
         data_layout.addWidget(net_val, 0, 1)
         
-        data_layout.addWidget(QLabel("Faktury brutto:"), 1, 0)
+        gross_label = QLabel("Faktury brutto:")
+        gross_label.setStyleSheet(f"color: {label_color};")
+        data_layout.addWidget(gross_label, 1, 0)
         gross_val = QLabel(f"{summary_data['invoice_gross']:,.2f} zł")
         gross_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        gross_val.setStyleSheet("color: #3b82f6;")
+        gross_val.setStyleSheet("color: #dc2626;")  # Dark red for main costs
         data_layout.addWidget(gross_val, 1, 1)
         
         # Right column
-        data_layout.addWidget(QLabel("Wynagrodzenia:"), 0, 2)
+        payroll_label = QLabel("Wynagrodzenia:")
+        payroll_label.setStyleSheet(f"color: {label_color};")
+        data_layout.addWidget(payroll_label, 0, 2)
         payroll_val = QLabel(f"{summary_data['payroll']:,.2f} zł")
         payroll_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        payroll_val.setStyleSheet("color: #ef4444;")
+        payroll_val.setStyleSheet("color: #f87171;")  # Light red for expenses
         data_layout.addWidget(payroll_val, 0, 3)
         
-        data_layout.addWidget(QLabel("Przychody:"), 1, 2)
+        revenue_label = QLabel("Przychody:")
+        revenue_label.setStyleSheet(f"color: {label_color};")
+        data_layout.addWidget(revenue_label, 1, 2)
         revenue_val = QLabel(f"{summary_data['revenue']:,.2f} zł")
         revenue_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
-        revenue_val.setStyleSheet("color: #10b981;")
+        revenue_val.setStyleSheet("color: #10b981;")  # Green for income
         data_layout.addWidget(revenue_val, 1, 3)
         
         summary_layout.addLayout(data_layout)
         
         # Separator
         separator = QFrame()
-        separator.setStyleSheet("background-color: #d1d5db; height: 2px;")
+        if self.theme == "dark":
+            separator.setStyleSheet("background-color: #374151; height: 2px;")
+        else:
+            separator.setStyleSheet("background-color: #d1d5db; height: 2px;")
         separator.setFixedHeight(2)
         summary_layout.addWidget(separator)
+        
+        # Calculate total costs and profit percentage
+        total_costs = summary_data['invoice_gross'] + summary_data['payroll']
+        profit_pct = (summary_data['profit'] / total_costs * 100) if total_costs > 0 else 0
         
         # Result - large and prominent
         result_layout = QHBoxLayout()
         result_label = QLabel("Wynik końcowy:")
         result_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        result_label.setStyleSheet(f"color: {text_color};")
         result_layout.addWidget(result_label)
         result_layout.addStretch()
         
         result_value = QLabel(f"{summary_data['profit']:,.2f} zł")
         result_value.setFont(QFont("Segoe UI", 18, QFont.Bold))
         
-        # Color code result
+        # Color code result - enhanced for dark mode
         if summary_data['profit'] < 0:
-            result_value.setStyleSheet("color: #dc2626; background-color: #fee2e2; padding: 12px 16px; border-radius: 6px;")
+            if self.theme == "dark":
+                result_value.setStyleSheet("color: #fecaca; background-color: #7f1d1d; padding: 12px 16px; border-radius: 6px; border: 2px solid #dc2626;")
+            else:
+                result_value.setStyleSheet("color: #dc2626; background-color: #fee2e2; padding: 12px 16px; border-radius: 6px;")
         else:
-            result_value.setStyleSheet("color: #059669; background-color: #d1fae5; padding: 12px 16px; border-radius: 6px;")
+            if self.theme == "dark":
+                result_value.setStyleSheet("color: #dcfce7; background-color: #15803d; padding: 12px 16px; border-radius: 6px; border: 2px solid #10b981;")
+            else:
+                result_value.setStyleSheet("color: #059669; background-color: #d1fae5; padding: 12px 16px; border-radius: 6px;")
         
         result_layout.addWidget(result_value)
         summary_layout.addLayout(result_layout)
+        
+        # Profit percentage
+        profit_pct_layout = QHBoxLayout()
+        profit_pct_label = QLabel("Marża zysku:")
+        profit_pct_label.setFont(QFont("Segoe UI", 11))
+        profit_pct_label.setStyleSheet(f"color: {label_color};")
+        profit_pct_layout.addWidget(profit_pct_label)
+        profit_pct_layout.addStretch()
+        
+        profit_pct_value = QLabel(f"{profit_pct:.2f}%")
+        profit_pct_value.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        profit_pct_color = "#10b981" if profit_pct >= 0 else "#ef4444"
+        profit_pct_value.setStyleSheet(f"color: {profit_pct_color};")
+        profit_pct_layout.addWidget(profit_pct_value)
+        summary_layout.addLayout(profit_pct_layout)
         
         layout.addWidget(summary_frame)
         layout.addStretch()
@@ -948,14 +995,19 @@ class AppMainWindow(QMainWindow):
         end_date = self.analysis_end.date().toPython()
         stats = self.controller.get_financial_summary(location_id=location_id, clinic_id=clinic_id, start_date=start_date, end_date=end_date)
         
+        # Calculate based on BRUTTO costs
+        total_costs = stats['invoice_gross'] + stats['payroll']
+        profit_pct = (stats['profit'] / total_costs * 100) if total_costs > 0 else 0
+        
         # Better formatted text with HTML for hierarchy
         metrics_text = f"""<b>Okres:</b> {start_date} — {end_date}<br><br>
 <b>Faktury:</b><br>
   Netto: <b>{stats['invoice_net']:,.2f} zł</b><br>
-  Brutto: <b>{stats['invoice_gross']:,.2f} zł</b><br><br>
-<b>Wynagrodzenia:</b> <b>{stats['payroll']:,.2f} zł</b><br><br>
-<b>Przychody:</b> <b>{stats['revenue']:,.2f} zł</b><br><br>
-<b>Wynik końcowy:</b> <span style="font-size: 14pt; font-weight: bold;">{stats['profit']:,.2f} zł</span>"""
+  Brutto: <span style="color: #dc2626; font-weight: bold;">{stats['invoice_gross']:,.2f} zł</span><br><br>
+<b>Wynagrodzenia:</b> <span style="color: #f87171; font-weight: bold;">{stats['payroll']:,.2f} zł</span><br><br>
+<b>Przychody:</b> <span style="color: #10b981; font-weight: bold;">{stats['revenue']:,.2f} zł</span><br><br>
+<b>Wynik końcowy:</b> <span style="font-size: 14pt; font-weight: bold; color: {'#059669' if stats['profit'] >= 0 else '#dc2626'};\">{stats['profit']:,.2f} zł</span><br>
+<b>Marża zysku:</b> <span style="color: {'#10b981' if profit_pct >= 0 else '#ef4444'}; font-weight: bold;\">{profit_pct:.2f}%</span>"""
         
         self.analysis_metrics.setText(metrics_text)
         self.plot_analysis(stats)
@@ -969,12 +1021,16 @@ class AppMainWindow(QMainWindow):
         axes = self.figure.subplots(1, 2, gridspec_kw={'width_ratios': [1, 1]})
         self.figure.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
         
-        # Bar chart - categories
-        cats = ["Faktury netto", "Wynagrodzenia", "Przychody"]
-        values = [stats["invoice_net"], stats["payroll"], stats["revenue"]]
-        colors = ["#3b82f6", "#ef4444", "#10b981"]
+        # Calculate costs and profit for correct chart (using BRUTTO)
+        total_costs = stats["invoice_gross"] + stats["payroll"]
+        profit = stats["revenue"] - total_costs
+        
+        # Bar chart - categories (using BRUTTO for invoices, not netto)
+        cats = ["Faktury (brutto)", "Wynagrodzenia", "Przychody", "Zysk"]
+        values = [stats["invoice_gross"], stats["payroll"], stats["revenue"], max(0, profit)]
+        colors = ["#dc2626", "#f87171", "#10b981", "#059669"]  # Red for costs, green for profit
         bars = axes[0].bar(cats, values, color=colors, edgecolor="none", alpha=0.85)
-        axes[0].set_title("Rozkład wydatków i przychodów", fontsize=13, fontweight='bold', pad=12)
+        axes[0].set_title("Rozkład wydatków, wynagrodzeń i zysku", fontsize=13, fontweight='bold', pad=12)
         axes[0].grid(axis="y", alpha=0.2, linestyle="--")
         axes[0].set_ylabel("Kwota (zł)", fontsize=10, fontweight='bold')
         axes[0].set_facecolor("#f8f9fa")
@@ -982,24 +1038,24 @@ class AppMainWindow(QMainWindow):
         # Annotate bars with values
         for bar, value in zip(bars, values):
             height = bar.get_height()
-            if height != 0:  # Only annotate non-zero values
+            if height > 0:  # Only annotate non-zero values
                 axes[0].text(bar.get_x() + bar.get_width()/2., height,
                             f'{value:,.0f} zł',
                             ha='center', va='bottom', fontsize=9, fontweight='bold')
         axes[0].tick_params(axis='x', labelsize=9)
         axes[0].tick_params(axis='y', labelsize=9)
         
-        # Pie chart - result breakdown
+        # Pie chart - result breakdown (using BRUTTO costs)
         if stats['revenue'] > 0:
             pie_labels = ['Przychody', 'Koszty']
-            pie_values = [stats['revenue'], stats['payroll'] + stats['invoice_net']]
-            pie_colors = ['#10b981', '#f87171']
+            pie_values = [stats['revenue'], total_costs]
+            pie_colors = ['#10b981', '#dc2626']
             wedges, texts, autotexts = axes[1].pie(pie_values, labels=pie_labels, autopct='%1.1f%%',
                                                     colors=pie_colors, startangle=90, textprops={'fontsize': 10})
             for autotext in autotexts:
                 autotext.set_color('white')
                 autotext.set_fontweight('bold')
-            axes[1].set_title("Proporcja przychodów vs kosztów", fontsize=13, fontweight='bold', pad=12)
+            axes[1].set_title("Przychody vs koszty", fontsize=13, fontweight='bold', pad=12)
         
         self.figure.tight_layout()
         self.canvas.draw()
