@@ -1,0 +1,20 @@
+Kalendarz klikalny - nie zmieniamy daty po kliknięciu, wyświetlamy daty
+Miesiąc w wynagrodzeniach i przychodach - drop lista
+Lepiej zagospodarowana Analiza finansowa
+Do faktur kolejna komórka z kategorią i firma - kto wystawił
+Sposób pamiętania poprzednich sesji
+Ekran ładowania
+Instalka
+Ikonki
+Wieksze teksty 
+Większe sumy
+
+
+BUGI
+nie aktualizująca się kwota w //Pruszków/Poradnia 1
+Nazwy plików z małych liter
+Numery nie po kolei (??)
+
+
+
+

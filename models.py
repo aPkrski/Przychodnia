@@ -18,6 +18,7 @@ class Clinic(Base):
     id = Column(Integer, primary_key=True)
     location_id = Column(Integer, ForeignKey("locations.id"), nullable=False)
     name = Column(String(120), nullable=False)
+    number = Column(Integer, nullable=True, default=0)  # For proper numeric sorting
     location = relationship("Location", back_populates="clinics")
     invoices = relationship("Invoice", back_populates="clinic", cascade="all, delete-orphan")
     payrolls = relationship("Payroll", back_populates="clinic", cascade="all, delete-orphan")
@@ -31,6 +32,8 @@ class Invoice(Base):
     clinic_id = Column(Integer, ForeignKey("clinics.id"), nullable=False)
     number = Column(String(80), nullable=False)
     item = Column(String(180), nullable=False)
+    category = Column(String(120), nullable=True, default="")
+    company_name = Column(String(140), nullable=True, default="")
     net_amount = Column(Numeric(10, 2), nullable=False)
     gross_amount = Column(Numeric(10, 2), nullable=False)
     date = Column(Date, nullable=False)

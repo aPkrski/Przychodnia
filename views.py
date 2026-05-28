@@ -5,7 +5,7 @@ from pathlib import Path
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt, QDate, QSize
+from PySide6.QtCore import Qt, QDate, QSize, QTimer, Signal
 from PySide6.QtGui import QAction, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -44,6 +44,36 @@ from models import Clinic, Invoice, Payroll, Revenue
 from style import dark_theme, light_theme
 
 
+class SafeDateEdit(QDateEdit):
+    """Custom QDateEdit that disables scroll wheel incrementing to prevent accidental date changes."""
+    def wheelEvent(self, event):
+        # Ignore wheel events - user must click calendar to change date
+        event.ignore()
+
+
+class MonthComboBox(QComboBox):
+    """Custom QComboBox for selecting months in Polish."""
+    MONTHS = [
+        "Styczeń", "Luty", "Marzec", "Kwiecień", "Maj", "Czerwiec",
+        "Lipiec", "Sierpień", "Wrzesień", "Październik", "Listopad", "Grudzień"
+    ]
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        for month in self.MONTHS:
+            self.addItem(month)
+    
+    def set_month_text(self, text):
+        """Set the selected month by text."""
+        index = self.findText(text)
+        if index >= 0:
+            self.setCurrentIndex(index)
+    
+    def get_month_text(self):
+        """Get the currently selected month."""
+        return self.currentText()
+
+
 class RecordDialog(QDialog):
     def __init__(self, title, fields, values=None, parent=None):
         super().__init__(parent)
@@ -61,10 +91,15 @@ class RecordDialog(QDialog):
             label = field["label"]
             field_type = field.get("type", "text")
             if field_type == "date":
-                editor = QDateEdit()
+                editor = SafeDateEdit()
                 editor.setCalendarPopup(True)
                 editor.setDisplayFormat("yyyy-MM-dd")
                 editor.setDate(self.values.get(name, date.today()))
+            elif field_type == "month":
+                editor = MonthComboBox()
+                month_value = self.values.get(name, "")
+                if month_value:
+                    editor.set_month_text(str(month_value))
             else:
                 editor = QLineEdit()
                 if field_type == "numeric":
@@ -86,6 +121,8 @@ class RecordDialog(QDialog):
             widget = self.inputs[name]
             if field_type == "date":
                 result[name] = widget.date().toPython()
+            elif field_type == "month":
+                result[name] = widget.get_month_text()
             elif field_type == "numeric":
                 try:
                     result[name] = float(widget.text().replace(",", "."))
@@ -111,6 +148,8 @@ class RecordDialog(QDialog):
 
 
 class RecordPage(QWidget):
+    data_changed = Signal()  # Emitted when data is added/edited
+    
     def __init__(self, controller, clinic_id, config, location=None, clinic=None, parent=None):
         super().__init__(parent)
         self.controller = controller
@@ -121,6 +160,23 @@ class RecordPage(QWidget):
         self.items = []
         self.build_ui()
         self.refresh()
+        
+        # Auto-refresh timer for consistency
+        self.refresh_timer = QTimer()
+        self.refresh_timer.timeout.connect(self.refresh)
+        self.refresh_timer.start(3000)  # Refresh every 3 seconds when widget is visible
+    
+    def showEvent(self, event):
+        """Start auto-refresh when widget becomes visible."""
+        super().showEvent(event)
+        if hasattr(self, 'refresh_timer'):
+            self.refresh_timer.start(3000)
+    
+    def hideEvent(self, event):
+        """Stop auto-refresh when widget is hidden."""
+        super().hideEvent(event)
+        if hasattr(self, 'refresh_timer'):
+            self.refresh_timer.stop()
 
     def build_ui(self):
         layout = QVBoxLayout(self)
@@ -161,7 +217,7 @@ class RecordPage(QWidget):
         self.search_input.textChanged.connect(self.refresh)
         filter_layout.addWidget(self.search_input)
 
-        self.start_date = QDateEdit()
+        self.start_date = SafeDateEdit()
         self.start_date.setCalendarPopup(True)
         self.start_date.setDisplayFormat("yyyy-MM-dd")
         self.start_date.setDate(QDate.currentDate().addMonths(-3))
@@ -169,7 +225,7 @@ class RecordPage(QWidget):
         filter_layout.addWidget(QLabel("Od"))
         filter_layout.addWidget(self.start_date)
 
-        self.end_date = QDateEdit()
+        self.end_date = SafeDateEdit()
         self.end_date.setCalendarPopup(True)
         self.end_date.setDisplayFormat("yyyy-MM-dd")
         self.end_date.setDate(QDate.currentDate())
@@ -222,6 +278,9 @@ class RecordPage(QWidget):
                 item.setEditable(False)
             model.appendRow(row)
         self.table.setModel(model)
+        # Force visual update
+        self.table.viewport().update()
+        
         # try to size columns to contents and then stretch to fill available space
         header = self.table.horizontalHeader()
         try:
@@ -287,9 +346,12 @@ class RecordPage(QWidget):
         # include location, clinic and date range in filename
         start = self.start_date.date().toPython()
         end = self.end_date.date().toPython()
-        loc = (self.location.name if hasattr(self, 'location') and self.location else 'location')
-        clname = (self.clinic.name if hasattr(self, 'clinic') and self.clinic else f"clinic_{self.clinic_id}")
-        default_name = f"{loc}_{clname}_{start}_{end}_{self.config['title'].lower().replace(' ', '_')}.xlsx"
+        loc = (self.location.name if hasattr(self, 'location') and self.location else 'Location')
+        clname = (self.clinic.name if hasattr(self, 'clinic') and self.clinic else f"Clinic_{self.clinic_id}")
+        # Capitalize first letter of title
+        title_text = self.config['title']
+        title_text = title_text[0].upper() + title_text[1:].lower() if title_text else ""
+        default_name = f"{loc}_{clname}_{start}_{end}_{title_text.replace(' ', '_')}.xlsx"
         path, _ = QFileDialog.getSaveFileName(self, "Eksportuj do Excel", default_name, "Pliki Excel (*.xlsx)")
         if path:
             rows = [self.config["export_fn"](record) for record in self.items]
@@ -485,102 +547,191 @@ class AppMainWindow(QMainWindow):
         export_layout.addStretch()
         layout.addLayout(export_layout)
 
-        summary = QLabel()
-        summary.setWordWrap(True)
-        layout.addWidget(summary)
+        # Improved summary section - professional dashboard style
+        summary_frame = QFrame()
+        summary_frame.setStyleSheet("background-color: #f8f9fa; border-radius: 8px; padding: 16px;")
+        summary_layout = QVBoxLayout(summary_frame)
+        summary_layout.setContentsMargins(16, 16, 16, 16)
+        summary_layout.setSpacing(12)
+        
         summary_data = self.controller.get_financial_summary(clinic_id=clinic.id)
-        summary.setText(
-            f"Suma faktur netto: {summary_data['invoice_net']:,.2f}  |  "
-            f"Suma faktur brutto: {summary_data['invoice_gross']:,.2f}\n"
-            f"Suma wynagrodzeń: {summary_data['payroll']:,.2f}  |  "
-            f"Suma przychodów: {summary_data['revenue']:,.2f}  |  "
-            f"Wynik: {summary_data['profit']:,.2f}"
-        )
+        
+        # Title
+        summary_title = QLabel("Podsumowanie finansowe")
+        summary_title.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        summary_layout.addWidget(summary_title)
+        
+        # Grid with financial data
+        data_layout = QGridLayout()
+        data_layout.setSpacing(16)
+        
+        # Left column
+        data_layout.addWidget(QLabel("Faktury netto:"), 0, 0)
+        net_val = QLabel(f"{summary_data['invoice_net']:,.2f} zł")
+        net_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        net_val.setStyleSheet("color: #3b82f6;")
+        data_layout.addWidget(net_val, 0, 1)
+        
+        data_layout.addWidget(QLabel("Faktury brutto:"), 1, 0)
+        gross_val = QLabel(f"{summary_data['invoice_gross']:,.2f} zł")
+        gross_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        gross_val.setStyleSheet("color: #3b82f6;")
+        data_layout.addWidget(gross_val, 1, 1)
+        
+        # Right column
+        data_layout.addWidget(QLabel("Wynagrodzenia:"), 0, 2)
+        payroll_val = QLabel(f"{summary_data['payroll']:,.2f} zł")
+        payroll_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        payroll_val.setStyleSheet("color: #ef4444;")
+        data_layout.addWidget(payroll_val, 0, 3)
+        
+        data_layout.addWidget(QLabel("Przychody:"), 1, 2)
+        revenue_val = QLabel(f"{summary_data['revenue']:,.2f} zł")
+        revenue_val.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        revenue_val.setStyleSheet("color: #10b981;")
+        data_layout.addWidget(revenue_val, 1, 3)
+        
+        summary_layout.addLayout(data_layout)
+        
+        # Separator
+        separator = QFrame()
+        separator.setStyleSheet("background-color: #d1d5db; height: 2px;")
+        separator.setFixedHeight(2)
+        summary_layout.addWidget(separator)
+        
+        # Result - large and prominent
+        result_layout = QHBoxLayout()
+        result_label = QLabel("Wynik końcowy:")
+        result_label.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        result_layout.addWidget(result_label)
+        result_layout.addStretch()
+        
+        result_value = QLabel(f"{summary_data['profit']:,.2f} zł")
+        result_value.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        
+        # Color code result
+        if summary_data['profit'] < 0:
+            result_value.setStyleSheet("color: #dc2626; background-color: #fee2e2; padding: 12px 16px; border-radius: 6px;")
+        else:
+            result_value.setStyleSheet("color: #059669; background-color: #d1fae5; padding: 12px 16px; border-radius: 6px;")
+        
+        result_layout.addWidget(result_value)
+        summary_layout.addLayout(result_layout)
+        
+        layout.addWidget(summary_frame)
         layout.addStretch()
         return page
 
     def build_analysis_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Title section with padding
+        title_frame = QFrame()
+        title_frame.setStyleSheet("background-color: #2563eb; padding: 16px;")
+        title_layout = QVBoxLayout(title_frame)
+        title_layout.setContentsMargins(16, 16, 16, 16)
         title = QLabel("Analiza finansowa")
         title.setObjectName("titleLabel")
-        layout.addWidget(title)
-        layout.addSpacing(12)
-
-        controls = QHBoxLayout()
-        controls.setSpacing(8)
-        controls.setContentsMargins(0, 0, 0, 0)
+        title.setStyleSheet("color: white; font-size: 28px; font-weight: bold;")
+        title_layout.addWidget(title)
+        layout.addWidget(title_frame)
+        
+        # Controls section - compact
+        controls_frame = QFrame()
+        controls_frame.setStyleSheet("padding: 12px;")
+        controls = QHBoxLayout(controls_frame)
+        controls.setSpacing(12)
+        controls.setContentsMargins(16, 12, 16, 12)
+        
         self.location_select = QComboBox()
         self.location_select.addItem("Wszystkie lokalizacje", None)
         for location in self.controller.get_locations():
             self.location_select.addItem(location.name, location.id)
         self.location_select.currentIndexChanged.connect(self.update_analysis)
-        lbl_loc = QLabel("Lokalizacja")
+        lbl_loc = QLabel("Lokalizacja:")
         lbl_loc.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        lbl_loc.setMaximumWidth(120)
+        lbl_loc.setMaximumWidth(100)
         controls.addWidget(lbl_loc)
         controls.addWidget(self.location_select)
 
         self.clinic_select = QComboBox()
         self.clinic_select.addItem("Wszystkie poradnie", None)
-        lbl_clinic = QLabel("Poradnia")
+        lbl_clinic = QLabel("Poradnia:")
         lbl_clinic.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        lbl_clinic.setMaximumWidth(120)
+        lbl_clinic.setMaximumWidth(100)
         controls.addWidget(lbl_clinic)
         controls.addWidget(self.clinic_select)
 
-        self.analysis_start = QDateEdit()
+        self.analysis_start = SafeDateEdit()
         self.analysis_start.setCalendarPopup(True)
         self.analysis_start.setDisplayFormat("yyyy-MM-dd")
         self.analysis_start.setDate(QDate.currentDate().addMonths(-3))
         self.analysis_start.dateChanged.connect(self.update_analysis)
-        lbl_od = QLabel("Od")
+        lbl_od = QLabel("Od: ")
         lbl_od.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        lbl_od.setMaximumWidth(60)
+        lbl_od.setMaximumWidth(40)
         controls.addWidget(lbl_od)
         controls.addWidget(self.analysis_start)
 
-        self.analysis_end = QDateEdit()
+        self.analysis_end = SafeDateEdit()
         self.analysis_end.setCalendarPopup(True)
         self.analysis_end.setDisplayFormat("yyyy-MM-dd")
         self.analysis_end.setDate(QDate.currentDate())
         self.analysis_end.dateChanged.connect(self.update_analysis)
-        lbl_do = QLabel("Do")
+        lbl_do = QLabel("Do: ")
         lbl_do.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        lbl_do.setMaximumWidth(60)
+        lbl_do.setMaximumWidth(40)
         controls.addWidget(lbl_do)
         controls.addWidget(self.analysis_end)
 
-        layout.addLayout(controls)
+        controls.addStretch()
+        layout.addWidget(controls_frame)
 
-        # Export analysis button
+        # Export analysis button - compact
         export_controls = QHBoxLayout()
+        export_controls.setContentsMargins(16, 8, 16, 8)
         self.analysis_export_button = QPushButton("Eksport analizy")
-        # add icon to export analysis button
         asset_dir = Path(__file__).parent / "assets"
         export_icon = asset_dir / "analysis.svg"
         if export_icon.exists():
             self.analysis_export_button.setIcon(QIcon(str(export_icon)))
             self.analysis_export_button.setIconSize(QSize(16, 16))
+        self.analysis_export_button.setMaximumWidth(180)
         self.analysis_export_button.setMinimumHeight(36)
         self.analysis_export_button.clicked.connect(self.on_export_analysis)
         export_controls.addWidget(self.analysis_export_button)
         export_controls.addStretch()
         layout.addLayout(export_controls)
 
+        # Summary section - larger fonts, better hierarchy
         summary_group = QGroupBox("Podsumowanie")
+        summary_group.setStyleSheet("QGroupBox { font-weight: bold; padding-top: 12px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
         summary_layout = QVBoxLayout(summary_group)
+        summary_layout.setContentsMargins(16, 12, 16, 12)
+        summary_layout.setSpacing(8)
+        
         self.analysis_metrics = QLabel()
         self.analysis_metrics.setWordWrap(True)
+        metrics_font = QFont("Segoe UI", 11)
+        self.analysis_metrics.setFont(metrics_font)
+        self.analysis_metrics.setStyleSheet("line-height: 1.6;")
         summary_layout.addWidget(self.analysis_metrics)
         layout.addWidget(summary_group)
 
+        # Chart section - full width
         chart_group = QGroupBox("Wykresy")
+        chart_group.setStyleSheet("QGroupBox { font-weight: bold; padding-top: 12px; } QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 3px; }")
         chart_layout = QHBoxLayout(chart_group)
-        self.figure = Figure(figsize=(10, 4))
+        chart_layout.setContentsMargins(16, 12, 16, 12)
+        self.figure = Figure(figsize=(12, 5))
         self.canvas = FigureCanvas(self.figure)
         chart_layout.addWidget(self.canvas)
         layout.addWidget(chart_group)
+
+        layout.addStretch()
 
         self.location_select.currentIndexChanged.connect(self.populate_clinic_options)
         self.populate_clinic_options()
@@ -636,10 +787,12 @@ class AppMainWindow(QMainWindow):
             "add_text": "Dodaj fakturę",
             "dialog_title": "Dodaj / Edytuj fakturę",
             "search_placeholder": "Szukaj numeru lub pozycji...",
-            "columns": ["ID", "Numer faktury", "Pozycja", "Cena netto", "Cena brutto", "Data"],
+            "columns": ["ID", "Numer faktury", "Pozycja", "Kategoria", "Firma", "Cena netto", "Cena brutto", "Data"],
             "fields": [
                 {"name": "number", "label": "Numer faktury", "type": "text"},
                 {"name": "item", "label": "Pozycja z faktury", "type": "text"},
+                {"name": "category", "label": "Kategoria", "type": "text"},
+                {"name": "company_name", "label": "Firma wystawiająca", "type": "text"},
                 {"name": "net_amount", "label": "Cena netto", "type": "numeric"},
                 {"name": "gross_amount", "label": "Cena brutto", "type": "numeric"},
                 {"name": "date", "label": "Data", "type": "date"},
@@ -648,13 +801,15 @@ class AppMainWindow(QMainWindow):
             "add_fn": self.controller.add_invoice,
             "update_fn": lambda record_id, data: self.controller.update_record(Invoice, record_id, data),
             "delete_fn": lambda record_id: self.controller.delete_record(Invoice, record_id),
-            "row_fn": lambda record: [record.id, record.number, record.item, f"{record.net_amount:.2f} zł", f"{record.gross_amount:.2f} zł", record.date],
+            "row_fn": lambda record: [record.id, record.number, record.item, getattr(record, 'category', ''), getattr(record, 'company_name', ''), f"{record.net_amount:.2f} zł", f"{record.gross_amount:.2f} zł", record.date],
             "summary_fn": lambda record: float(record.gross_amount),
             "summary_label": "Suma brutto",
             "export_fn": lambda record: {
                 "ID": record.id,
                 "Numer faktury": record.number,
                 "Pozycja": record.item,
+                "Kategoria": getattr(record, 'category', ''),
+                "Firma": getattr(record, 'company_name', ''),
                 "Cena netto": float(record.net_amount),
                 "Cena brutto": float(record.gross_amount),
                 "Data": record.date,
@@ -682,7 +837,7 @@ class AppMainWindow(QMainWindow):
             "columns": ["ID", "Pracownik", "Miesiąc", "Kwota", "Data"],
             "fields": [
                 {"name": "employee", "label": "Pracownik", "type": "text"},
-                {"name": "period", "label": "Miesiąc", "type": "text"},
+                {"name": "period", "label": "Miesiąc", "type": "month"},
                 {"name": "amount", "label": "Kwota", "type": "numeric"},
                 {"name": "date", "label": "Data", "type": "date"},
             ],
@@ -723,7 +878,7 @@ class AppMainWindow(QMainWindow):
             "columns": ["ID", "Firma", "Miesiąc", "Kwota", "Data"],
             "fields": [
                 {"name": "company", "label": "Firma", "type": "text"},
-                {"name": "period", "label": "Miesiąc", "type": "text"},
+                {"name": "period", "label": "Miesiąc", "type": "month"},
                 {"name": "amount", "label": "Kwota", "type": "numeric"},
                 {"name": "date", "label": "Data", "type": "date"},
             ],
@@ -783,10 +938,6 @@ class AppMainWindow(QMainWindow):
             for clinic in clinics:
                 self.clinic_select.addItem(clinic.name, clinic.id)
         self.clinic_select.blockSignals(False)
-        try:
-            self.clinic_select.currentIndexChanged.disconnect(self.update_analysis)
-        except Exception:
-            pass
         self.clinic_select.currentIndexChanged.connect(self.update_analysis)
         self.update_analysis()
 
@@ -796,45 +947,65 @@ class AppMainWindow(QMainWindow):
         start_date = self.analysis_start.date().toPython()
         end_date = self.analysis_end.date().toPython()
         stats = self.controller.get_financial_summary(location_id=location_id, clinic_id=clinic_id, start_date=start_date, end_date=end_date)
-        self.analysis_metrics.setText(
-            f"Okres: {start_date} — {end_date}\n"
-            f"Suma faktur netto: {stats['invoice_net']:,.2f}\n"
-            f"Suma faktur brutto: {stats['invoice_gross']:,.2f}\n"
-            f"Suma wynagrodzeń: {stats['payroll']:,.2f}\n"
-            f"Suma przychodów: {stats['revenue']:,.2f}\n"
-            f"Wynik końcowy: {stats['profit']:,.2f}"
-        )
+        
+        # Better formatted text with HTML for hierarchy
+        metrics_text = f"""<b>Okres:</b> {start_date} — {end_date}<br><br>
+<b>Faktury:</b><br>
+  Netto: <b>{stats['invoice_net']:,.2f} zł</b><br>
+  Brutto: <b>{stats['invoice_gross']:,.2f} zł</b><br><br>
+<b>Wynagrodzenia:</b> <b>{stats['payroll']:,.2f} zł</b><br><br>
+<b>Przychody:</b> <b>{stats['revenue']:,.2f} zł</b><br><br>
+<b>Wynik końcowy:</b> <span style="font-size: 14pt; font-weight: bold;">{stats['profit']:,.2f} zł</span>"""
+        
+        self.analysis_metrics.setText(metrics_text)
         self.plot_analysis(stats)
 
     def plot_analysis(self, stats):
-        # improve chart appearance and add units/filters info
+        # Modern chart appearance with better hierarchy
         self.figure.clear()
-        self.figure.patch.set_facecolor("#f3f7fb")
-        axes = self.figure.subplots(1, 2)
-        cats = ["Faktury netto (zł)", "Wynagrodzenia (zł)", "Przychody (zł)"]
+        self.figure.patch.set_facecolor("white")
+        
+        # Create subplots with better spacing
+        axes = self.figure.subplots(1, 2, gridspec_kw={'width_ratios': [1, 1]})
+        self.figure.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
+        
+        # Bar chart - categories
+        cats = ["Faktury netto", "Wynagrodzenia", "Przychody"]
         values = [stats["invoice_net"], stats["payroll"], stats["revenue"]]
-        bars = axes[0].bar(cats, values, color=["#60a5fa", "#fca5a5", "#86efac"], edgecolor="#111827", alpha=0.9)
-        axes[0].set_title("Suma kategorii")
-        axes[0].grid(axis="y", alpha=0.2)
-        axes[0].set_ylabel("Kwota (zł)")
-        # annotate bars
-        for b, v in zip(bars, values):
-            axes[0].text(b.get_x() + b.get_width() / 2, v, f"{v:,.2f} zł", ha='center', va='bottom', fontsize=9)
-
-        axes[1].plot(["Start", "Koniec"], [stats["invoice_gross"], stats["profit"]], marker="o", color="#f59e0b", linewidth=2)
-        axes[1].set_title("Trend wyników")
-        axes[1].set_ylabel("Kwota (zł)")
-        axes[1].grid(alpha=0.2)
-
-        # add filters info as small subtitle
-        filters_text = f"Lokalizacja: {self.location_select.currentText()} | Poradnia: {self.clinic_select.currentText()} | Okres: {self.analysis_start.date().toPython()} — {self.analysis_end.date().toPython()}"
-        self.figure.suptitle(filters_text, fontsize=9, y=0.98)
-
-        self.figure.tight_layout(rect=[0, 0, 1, 0.95])
+        colors = ["#3b82f6", "#ef4444", "#10b981"]
+        bars = axes[0].bar(cats, values, color=colors, edgecolor="none", alpha=0.85)
+        axes[0].set_title("Rozkład wydatków i przychodów", fontsize=13, fontweight='bold', pad=12)
+        axes[0].grid(axis="y", alpha=0.2, linestyle="--")
+        axes[0].set_ylabel("Kwota (zł)", fontsize=10, fontweight='bold')
+        axes[0].set_facecolor("#f8f9fa")
+        
+        # Annotate bars with values
+        for bar, value in zip(bars, values):
+            height = bar.get_height()
+            if height != 0:  # Only annotate non-zero values
+                axes[0].text(bar.get_x() + bar.get_width()/2., height,
+                            f'{value:,.0f} zł',
+                            ha='center', va='bottom', fontsize=9, fontweight='bold')
+        axes[0].tick_params(axis='x', labelsize=9)
+        axes[0].tick_params(axis='y', labelsize=9)
+        
+        # Pie chart - result breakdown
+        if stats['revenue'] > 0:
+            pie_labels = ['Przychody', 'Koszty']
+            pie_values = [stats['revenue'], stats['payroll'] + stats['invoice_net']]
+            pie_colors = ['#10b981', '#f87171']
+            wedges, texts, autotexts = axes[1].pie(pie_values, labels=pie_labels, autopct='%1.1f%%',
+                                                    colors=pie_colors, startangle=90, textprops={'fontsize': 10})
+            for autotext in autotexts:
+                autotext.set_color('white')
+                autotext.set_fontweight('bold')
+            axes[1].set_title("Proporcja przychodów vs kosztów", fontsize=13, fontweight='bold', pad=12)
+        
+        self.figure.tight_layout()
         self.canvas.draw()
 
     def export_clinic_summary(self, location, clinic):
-        default_name = f"{clinic.name.lower().replace(' ', '_')}_zestawienie.xlsx"
+        default_name = f"{clinic.name.replace(' ', '_')}_Zestawienie.xlsx"
         path, _ = QFileDialog.getSaveFileName(self, "Eksport zestawienia poradni", default_name, "Excel Files (*.xlsx)")
         if path:
             self.controller.export_clinic_summary(clinic.id, path)
@@ -846,7 +1017,12 @@ class AppMainWindow(QMainWindow):
         clinic_id = self.clinic_select.currentData()
         start_date = self.analysis_start.date().toPython()
         end_date = self.analysis_end.date().toPython()
-        default_name = f"analiza_{self.location_select.currentText().lower().replace(' ', '_')}_{self.clinic_select.currentText().lower().replace(' ', '_')}_{start_date}_{end_date}.xlsx"
+        
+        # Capitalize location and clinic names in filename
+        loc_text = self.location_select.currentText()
+        clinic_text = self.clinic_select.currentText()
+        default_name = f"Analiza_{loc_text.replace(' ', '_')}_{clinic_text.replace(' ', '_')}_{start_date}_{end_date}.xlsx"
+        
         path, _ = QFileDialog.getSaveFileName(self, "Eksport analizy", default_name, "Pliki Excel (*.xlsx)")
         if not path:
             return

@@ -23,7 +23,7 @@ class AppController:
             query = select(Clinic)
             if location_id is not None:
                 query = query.where(Clinic.location_id == location_id)
-            return session.scalars(query.order_by(Clinic.name)).all()
+            return session.scalars(query.order_by(Clinic.number, Clinic.name)).all()
 
     def get_invoices(self, clinic_id, start_date=None, end_date=None, search_text=None):
         return self._get_records(Invoice, clinic_id, start_date, end_date, search_text)
@@ -59,13 +59,15 @@ class AppController:
             session.refresh(record)
             return record
 
-    def add_invoice(self, clinic_id, number, item, net_amount, gross_amount, date):
+    def add_invoice(self, clinic_id, number, item, net_amount, gross_amount, date, category="", company_name=""):
         return self._add_record(Invoice, clinic_id, {
             "number": number,
             "item": item,
             "net_amount": net_amount,
             "gross_amount": gross_amount,
             "date": date,
+            "category": category or "",
+            "company_name": company_name or "",
         })
 
     def add_payroll(self, clinic_id, employee, period, amount, date):
